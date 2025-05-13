@@ -1,0 +1,102 @@
+name: Build and Release Libraries
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build_libraries:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        library: [bootstraplauncher, securejarhandler, modlauncher]
+        include:
+          - library: bootstraplauncher
+            repo_url: https://github.com/McModLauncher/bootstraplauncher.git
+            commit_hash: "863489e5"
+            jar_version: "2.0.2"
+            patch_url: "https://mirror.gravitlauncher.com/5.6.x/patches/bootstraplauncher-2.0.0.patch"
+          - library: securejarhandler
+            repo_url: https://github.com/McModLauncher/securejarhandler.git
+            commit_hash: "8382e570"
+            jar_version: "3.0.8"
+            patch_url: "https://mirror.gravitlauncher.com/5.5.x/patches/forge/securejarhandler-2.1.27.patch"
+          - library: modlauncher
+            repo_url: https://github.com/McModLauncher/modlauncher.git
+            commit_hash: "d2e20e43"
+            jar_version: "11.0.4"
+            patch_url: "https://mirror.gravitlauncher.com/5.5.x/patches/forge/modlauncher.patch"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+      - name: Determine Library Specifics
+        id: lib_details
+        run: |
+          echo "JAR_COMMIT=${{ matrix.commit_hash }}" >> $GITHUB_OUTPUT
+          echo "JAR_VERSION=${{ matrix.jar_version }}" >> $GITHUB_OUTPUT
+          echo "PATCH_URL=${{ matrix.patch_url }}" >> $GITHUB_OUTPUT
+          echo "Processing ${{ matrix.library }}: Commit=${{ matrix.commit_hash }}, Version=${{ matrix.jar_version }}"
+      - name: Clone ${{ matrix.library }}
+        run: git clone ${{ matrix.repo_url }} ${{ matrix.library }}-src
+      - name: Reset commit
+        working-directory: ./${{ matrix.library }}-src
+        run: git reset --hard ${{ steps.lib_details.outputs.JAR_COMMIT }}
+      - name: Ensure Gradle Wrapper 8.3
+        working-directory: ./${{ matrix.library }}-src
+        run: |
+          if [ -f ./gradlew ]; then
+            ./gradlew wrapper --gradle-version 8.3 --distribution-type bin --no-daemon
+          else
+            echo "No gradlew script found, skipping wrapper update."
+          fi
+          echo "Building ${{ matrix.library }} with project default Java settings."
+      - name: Download patch
+        run: wget -O ${{ matrix.library }}.patch "${{ steps.lib_details.outputs.PATCH_URL }}"
+      - name: Apply patch
+        working-directory: ./${{ matrix.library }}-src
+        run: |
+          git apply -3 --verbose ../${{ matrix.library }}.patch || \
+          (echo "Failed to apply cleanly, trying with --reject..." && \
+           git apply -3 --verbose --reject ../${{ matrix.library }}.patch && \
+           echo "Patch applied with rejections. Check .rej files.") || \
+          (echo "Failed to apply patch even with --reject for ${{ matrix.library }}." && exit 1)
+      - name: Build ${{ matrix.library }}
+        working-directory: ./${{ matrix.library }}-src
+        run: ./gradlew build --no-daemon -x test
+      - name: Prepare artifact details
+        id: artifact_details
+        run: |
+          ARTIFACT_NAME="${{ matrix.library }}-${{ steps.lib_details.outputs.JAR_VERSION }}.jar"
+          ARTIFACT_DIR="./${{ matrix.library }}-src/build/libs"
+          EXACT_ARTIFACT_PATH=$(find $ARTIFACT_DIR -name "${{ matrix.library }}-${{ steps.lib_details.outputs.JAR_VERSION }}*.jar" -print -quit)
+          if [ -z "$EXACT_ARTIFACT_PATH" ]; then
+            echo "Error: Could not find built JAR for ${{ matrix.library }} version ${{ steps.lib_details.outputs.JAR_VERSION }} in $ARTIFACT_DIR"
+            ls -R $ARTIFACT_DIR
+            exit 1
+          fi
+          echo "ARTIFACT_NAME=$(basename $EXACT_ARTIFACT_PATH)" >> $GITHUB_OUTPUT
+          echo "ARTIFACT_PATH=$EXACT_ARTIFACT_PATH" >> $GITHUB_OUTPUT
+      - name: Upload to Release (on tag)
+        uses: actions/upload-release-asset@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ${{ steps.artifact_details.outputs.ARTIFACT_PATH }}
+          asset_name: ${{ steps.artifact_details.outputs.ARTIFACT_NAME }}
+          asset_content_type: application/java-archive
+      - name: Upload Build Artifact (non-tag)
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact_details.outputs.ARTIFACT_NAME }}
+          path: ${{ steps.artifact_details.outputs.ARTIFACT_PATH }} 
