@@ -74,15 +74,24 @@ jobs:
       - name: Prepare artifact details
         id: artifact_details
         run: |
-          ARTIFACT_NAME="${{ matrix.library }}-${{ steps.lib_details.outputs.JAR_VERSION }}.jar"
           ARTIFACT_DIR="./${{ matrix.library }}-src/build/libs"
-          EXACT_ARTIFACT_PATH=$(find $ARTIFACT_DIR -name "${{ matrix.library }}-${{ steps.lib_details.outputs.JAR_VERSION }}*.jar" -print -quit)
+          EXACT_ARTIFACT_PATH=$(find "$ARTIFACT_DIR" -maxdepth 1 -name "${{ matrix.library }}-${{ steps.lib_details.outputs.JAR_VERSION }}.jar" -print -quit)
           if [ -z "$EXACT_ARTIFACT_PATH" ]; then
-            echo "Error: Could not find built JAR for ${{ matrix.library }} version ${{ steps.lib_details.outputs.JAR_VERSION }} in $ARTIFACT_DIR"
-            ls -R $ARTIFACT_DIR
+            echo "Plain JAR not found for ${{ matrix.library }}, searching for other primary JARs (excluding -sources, -javadoc)..."
+            EXACT_ARTIFACT_PATH=$(find "$ARTIFACT_DIR" -maxdepth 1 -name "${{ matrix.library }}-${{ steps.lib_details.outputs.JAR_VERSION }}*.jar" \
+              ! -name "*-sources.jar" \
+              ! -name "*-javadoc.jar" \
+              -print -quit)
+          fi
+
+          if [ -z "$EXACT_ARTIFACT_PATH" ]; then
+            echo "Error: Could not find a suitable built JAR for ${{ matrix.library }} version ${{ steps.lib_details.outputs.JAR_VERSION }} in $ARTIFACT_DIR"
+            echo "Contents of $ARTIFACT_DIR:"
+            ls -R "$ARTIFACT_DIR"
             exit 1
           fi
-          echo "ARTIFACT_NAME=$(basename $EXACT_ARTIFACT_PATH)" >> $GITHUB_OUTPUT
+          echo "Selected artifact path for ${{ matrix.library }}: $EXACT_ARTIFACT_PATH"
+          echo "ARTIFACT_NAME=$(basename "$EXACT_ARTIFACT_PATH")" >> $GITHUB_OUTPUT
           echo "ARTIFACT_PATH=$EXACT_ARTIFACT_PATH" >> $GITHUB_OUTPUT
       - name: Upload to Release (on tag)
         uses: actions/upload-release-asset@v1
